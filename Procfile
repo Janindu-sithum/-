@@ -1,1 +1,1 @@
-worker: python rajasinghe.py
+worker: python index.py
