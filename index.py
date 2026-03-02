@@ -4,7 +4,7 @@ from telethon import TelegramClient, events, Button
 # --- මූලික විස්තර ---
 API_ID = 32917080
 API_HASH = "31ad795e1bfd596494efb278f59488a3"
-MAIN_BOT_TOKEN = "8302327984:AAFa4iJBJiYeQm1acQi1Z3uTHj4i_crlJ_c"
+MAIN_BOT_TOKEN = "8302327984:AAHhvh71QMFNJqrnh58vsjRKwS5DvhZQp4M"
 DB_CHANNEL_ID = -1003750069060
 
 # දත්ත ගබඩා
