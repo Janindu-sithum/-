@@ -1,109 +1,82 @@
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-import sqlite3
-import uuid
-import os
+import asyncio
+from telethon import TelegramClient, events, Button
 
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID"))
-ADMIN_ID = int(os.environ.get("ADMIN_ID"))
+# --- බොට්ගේ විස්තර ---
+API_ID = 32917080
+API_HASH = "31ad795e1bfd596494efb278f59488a3"
+BOT_TOKEN = "8302327984:AAFa4iJBJiYeQm1acQi1Z3uTHj4i_crlJ_c"
+DB_CHANNEL_ID = -1003750069060
 
-app = Client(
-    "rajasinha_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+# Client එක සාදමු (No Proxy needed for Koyeb/Render)
+bot = TelegramClient('rajasinghe_session', API_ID, API_HASH)
 
-db = sqlite3.connect("files.db", check_same_thread=False)
-cursor = db.cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS files(link_id TEXT,msg_id INTEGER,size INTEGER)")
-cursor.execute("CREATE TABLE IF NOT EXISTS stats(downloads INTEGER)")
-cursor.execute("INSERT OR IGNORE INTO stats VALUES (0)")
-db.commit()
-
-sessions = {}
-
-def add_download():
-    cursor.execute("UPDATE stats SET downloads = downloads + 1")
-    db.commit()
-
-def get_downloads():
-    return cursor.execute("SELECT downloads FROM stats").fetchone()[0]
-
-@app.on_message(filters.command("start"))
-async def start(client, message):
-    if len(message.command) > 1:
-        link_id = message.command[1]
-        rows = cursor.execute("SELECT msg_id FROM files WHERE link_id=?", (link_id,)).fetchall()
-        if rows:
-            for msg in rows:
-                await client.copy_message(
-                    message.chat.id,
-                    CHANNEL_ID,
-                    msg[0],
-                    caption="📦 Shared via රාජසිංහ Bot"
-                )
-            add_download()
-        else:
-            await message.reply("❌ Link invalid")
+@bot.on(events.NewMessage(pattern='/start'))
+async def start(event):
+    user_id = event.sender_id
+    # ලින්ක් එකක් හරහා ආවොත්
+    if len(event.message.text.split()) > 1:
+        msg_ids_raw = event.message.text.split()[1]
+        msg_ids = [int(i) for i in msg_ids_raw.split('x')]
+        await event.respond("🛡️ රාජසිංහ ඔබේ ගොනු ලබා ගනිමින් පවතියි...")
+        for m_id in msg_ids:
+            try:
+                await bot.forward_messages(user_id, m_id, DB_CHANNEL_ID)
+            except Exception as e:
+                print(f"Error forwarding: {e}")
         return
 
-    await message.reply("👋 රාජසිංහ Bot වෙත සාදරයෙන් පිළිගනිමු!\n\n/link type කරලා share link එක හදන්න.")
-
-@app.on_message(filters.command("link"))
-async def link_mode(client, message):
-    sessions[message.from_user.id] = []
-    await message.reply("📤 files upload කරන්න.\nඅවසන් වූ විට /done type කරන්න.")
-
-@app.on_message(filters.private & (filters.document | filters.photo | filters.video | filters.text))
-async def save(client, message):
-    uid = message.from_user.id
-    if uid not in sessions:
-        return
-
-    size = 0
-    if message.document:
-        size = message.document.file_size
-    elif message.video:
-        size = message.video.file_size
-    elif message.photo:
-        size = message.photo[-1].file_size
-
-    if message.text:
-        sent = await client.send_message(CHANNEL_ID, message.text)
-    else:
-        sent = await message.copy(CHANNEL_ID)
-
-    sessions[uid].append((sent.id, size))
-    await message.reply("✔️ Added")
-
-@app.on_message(filters.command("done"))
-async def done(client, message):
-    uid = message.from_user.id
-    if uid not in sessions:
-        return
-
-    link_id = str(uuid.uuid4())[:8]
-    total = 0
-    for msg_id, size in sessions[uid]:
-        cursor.execute("INSERT INTO files VALUES(?,?,?)", (link_id, msg_id, size))
-        total += size
-    db.commit()
-    sessions[uid] = []
-
-    link = f"https://t.me/{(await app.get_me()).username}?start={link_id}"
-    await message.reply(f"🔗 Link:\n{link}\n📦 Size: {round(total/1024/1024,2)} MB")
-
-@app.on_message(filters.command("admin") & filters.user(ADMIN_ID))
-async def admin(client, message):
-    files = cursor.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-    downloads = get_downloads()
-    storage = cursor.execute("SELECT SUM(size) FROM files").fetchone()[0] or 0
-    await message.reply(
-        f"👑 ADMIN PANEL\nFiles: {files}\nDownloads: {downloads}\nStorage: {round(storage/1024/1024,2)} MB"
+    welcome_msg = (
+        f"ආයුබෝවන් {event.sender.first_name}! මම රාජසිංහ. 👑\n\n"
+        "ඔයාට share කරන්න ඕන ඕනෑම දෙයක් මට එවන්න.\n"
+        "වැඩේ ඉවර වුණාම මම ඔයාට රහස්‍ය ලින්ක් එකක් දෙන්නම්."
     )
+    await event.respond(welcome_msg)
 
-app.run()
+@bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private and not e.text.startswith('/')))
+async def handle_incoming(event):
+    if not hasattr(bot, 'user_storage'):
+        bot.user_storage = {}
+        
+    user_id = event.sender_id
+    if user_id not in bot.user_storage:
+        bot.user_storage[user_id] = []
+    
+    bot.user_storage[user_id].append(event.message.id)
+    count = len(bot.user_storage[user_id])
+    
+    buttons = [
+        [Button.inline("තව තියෙනවා ➕", data="add_more")],
+        [Button.inline("ලින්ක් එක හදන්න 🔗", data="gen_link")]
+    ]
+    await event.respond(f"✅ එකතු කරගත්තා! (ගොනු: {count})\nතව එවනවද?", buttons=buttons)
+
+@bot.on(events.CallbackQuery)
+async def callback(event):
+    user_id = event.sender_id
+    if event.data == b"add_more":
+        await event.answer("හරි, තව එවන්න!")
+    elif event.data == b"gen_link":
+        if user_id not in bot.user_storage or not bot.user_storage[user_id]:
+            await event.answer("කරුණාකර කලින් file එකක් එවන්න!", alert=True)
+            return
+
+        await event.edit("🔄 ලින්ක් එක සකසමින් පවතියි...")
+        saved_ids = []
+        for msg_id in bot.user_storage[user_id]:
+            sent_msg = await bot.forward_messages(DB_CHANNEL_ID, msg_id, user_id)
+            saved_ids.append(str(sent_msg.id))
+        
+        unique_string = "x".join(saved_ids)
+        bot_info = await bot.get_me()
+        share_link = f"https://t.me/{bot_info.username}?start={unique_string}"
+        
+        await event.edit(f"✅ **සාර්ථකයි!**\n\nමෙන්න ඔයාගේ ලින්ක් එක:\n`{share_link}`")
+        bot.user_storage[user_id] = []
+
+async def main():
+    await bot.start(bot_token=BOT_TOKEN)
+    print("රාජසිංහ සාර්ථකව පණ ගැන්වුණා!")
+    await bot.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())
