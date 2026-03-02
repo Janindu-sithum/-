@@ -1,82 +1,107 @@
 import asyncio
+import logging
 from telethon import TelegramClient, events, Button
 
-# --- බොට්ගේ විස්තර ---
+# --- මූලික විස්තර ---
 API_ID = 32917080
 API_HASH = "31ad795e1bfd596494efb278f59488a3"
-BOT_TOKEN = "8302327984:AAFa4iJBJiYeQm1acQi1Z3uTHj4i_crlJ_c"
+MAIN_BOT_TOKEN = "8302327984:AAFa4iJBJiYeQm1acQi1Z3uTHj4i_crlJ_c"
 DB_CHANNEL_ID = -1003750069060
 
-# Client එක සාදමු (No Proxy needed for Koyeb/Render)
-bot = TelegramClient('rajasinghe_session', API_ID, API_HASH)
+# දත්ත ගබඩා (In-memory)
+user_storage = {}
+user_state = {}  # /link active ද නැද්ද බලන්න
+cloned_bots = {} # Clone කරන බෝට්ස්ලා තියාගන්න
 
-@bot.on(events.NewMessage(pattern='/start'))
-async def start(event):
-    user_id = event.sender_id
-    # ලින්ක් එකක් හරහා ආවොත්
-    if len(event.message.text.split()) > 1:
-        msg_ids_raw = event.message.text.split()[1]
-        msg_ids = [int(i) for i in msg_ids_raw.split('x')]
-        await event.respond("🛡️ රාජසිංහ ඔබේ ගොනු ලබා ගනිමින් පවතියි...")
-        for m_id in msg_ids:
-            try:
-                await bot.forward_messages(user_id, m_id, DB_CHANNEL_ID)
-            except Exception as e:
-                print(f"Error forwarding: {e}")
-        return
-
-    welcome_msg = (
-        f"ආයුබෝවන් {event.sender.first_name}! මම රාජසිංහ. 👑\n\n"
-        "ඔයාට share කරන්න ඕන ඕනෑම දෙයක් මට එවන්න.\n"
-        "වැඩේ ඉවර වුණාම මම ඔයාට රහස්‍ය ලින්ක් එකක් දෙන්නම්."
-    )
-    await event.respond(welcome_msg)
-
-@bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private and not e.text.startswith('/')))
-async def handle_incoming(event):
-    if not hasattr(bot, 'user_storage'):
-        bot.user_storage = {}
-        
-    user_id = event.sender_id
-    if user_id not in bot.user_storage:
-        bot.user_storage[user_id] = []
+async def setup_bot_handlers(client):
+    """බොට්ගේ සියලුම ක්‍රියාකාරකම් මෙහි අඩංගු වේ (Main සහ Clones දෙකටම)"""
     
-    bot.user_storage[user_id].append(event.message.id)
-    count = len(bot.user_storage[user_id])
-    
-    buttons = [
-        [Button.inline("තව තියෙනවා ➕", data="add_more")],
-        [Button.inline("ලින්ක් එක හදන්න 🔗", data="gen_link")]
-    ]
-    await event.respond(f"✅ එකතු කරගත්තා! (ගොනු: {count})\nතව එවනවද?", buttons=buttons)
-
-@bot.on(events.CallbackQuery)
-async def callback(event):
-    user_id = event.sender_id
-    if event.data == b"add_more":
-        await event.answer("හරි, තව එවන්න!")
-    elif event.data == b"gen_link":
-        if user_id not in bot.user_storage or not bot.user_storage[user_id]:
-            await event.answer("කරුණාකර කලින් file එකක් එවන්න!", alert=True)
+    @client.on(events.NewMessage(pattern='/start'))
+    async def start(event):
+        user_id = event.sender_id
+        # File Retrieval
+        if len(event.message.text.split()) > 1:
+            msg_ids_raw = event.message.text.split()[1]
+            msg_ids = [int(i) for i in msg_ids_raw.split('x')]
+            await event.respond("🛡️ රාජසිංහ ඔබේ ගොනු ලබා ගනිමින් පවතියි...")
+            for m_id in msg_ids:
+                try: await client.forward_messages(user_id, m_id, DB_CHANNEL_ID)
+                except: continue
             return
 
-        await event.edit("🔄 ලින්ක් එක සකසමින් පවතියි...")
-        saved_ids = []
-        for msg_id in bot.user_storage[user_id]:
-            sent_msg = await bot.forward_messages(DB_CHANNEL_ID, msg_id, user_id)
-            saved_ids.append(str(sent_msg.id))
-        
-        unique_string = "x".join(saved_ids)
-        bot_info = await bot.get_me()
-        share_link = f"https://t.me/{bot_info.username}?start={unique_string}"
-        
-        await event.edit(f"✅ **සාර්ථකයි!**\n\nමෙන්න ඔයාගේ ලින්ක් එක:\n`{share_link}`")
-        bot.user_storage[user_id] = []
+        welcome = f"ආයුබෝවන් {event.sender.first_name}! මම රාජසිංහ. 👑\n\nලින්ක් එකක් හදන්න අවශ්‍ය නම් `/link` ලෙස type කරන්න."
+        await event.respond(welcome)
 
+    @client.on(events.NewMessage(pattern='/link'))
+    async def link_cmd(event):
+        user_id = event.sender_id
+        user_state[user_id] = "uploading"
+        user_storage[user_id] = []
+        await event.respond("✅ දැන් ඔයාට share කරන්න ඕන files/messages මට එවන්න. එවා අවසන් වූ පසු 'Generate' බොත්තම ඔබන්න.")
+
+    @client.on(events.NewMessage(pattern='/clone'))
+    async def clone_bot(event):
+        args = event.message.text.split()
+        if len(args) < 2:
+            return await event.respond("භාවිතය: `/clone BOT_TOKEN_HERE`")
+        
+        new_token = args[1]
+        await event.respond("🔄 අලුත් Bot පණගන්වමින් පවතියි... කරුණාකර රැඳී සිටින්න.")
+        
+        try:
+            new_bot = TelegramClient(f"bot_{new_token[:5]}", API_ID, API_HASH)
+            await new_bot.start(bot_token=new_token)
+            await setup_bot_handlers(new_bot)
+            cloned_bots[new_token] = new_bot
+            await event.respond("✅ සාර්ථකයි! අලුත් Bot දැන් වැඩ.")
+        except Exception as e:
+            await event.respond(f"❌ වැරදීමක්: {str(e)}")
+
+    @client.on(events.NewMessage(incoming=True))
+    async def handle_files(event):
+        user_id = event.sender_id
+        # /link command එක ගහලා තිබුණොත් විතරක් files ගන්න
+        if user_state.get(user_id) == "uploading" and not event.text.startswith('/'):
+            user_storage[user_id].append(event.message.id)
+            count = len(user_storage[user_id])
+            buttons = [
+                [Button.inline("තව තියෙනවා ➕", data="add_more")],
+                [Button.inline("ලින්ක් එක හදන්න 🔗", data="gen_link")]
+            ]
+            # Double message වැළැක්වීමට මෙහි reply භාවිතා කරයි
+            await event.respond(f"✅ එකතු කරගත්තා! (ගොනු: {count})", buttons=buttons)
+
+    @client.on(events.CallbackQuery)
+    async def callback(event):
+        user_id = event.sender_id
+        if event.data == b"add_more":
+            await event.answer("හරි, තව එවන්න!")
+        elif event.data == b"gen_link":
+            if user_id not in user_storage or not user_storage[user_id]:
+                return await event.answer("කලින් file එකක් එවන්න!", alert=True)
+
+            await event.edit("🔄 ලින්ක් එක සකසමින් පවතියි...")
+            saved_ids = []
+            for msg_id in user_storage[user_id]:
+                sent_msg = await client.forward_messages(DB_CHANNEL_ID, msg_id, user_id)
+                saved_ids.append(str(sent_msg.id))
+            
+            unique_string = "x".join(saved_ids)
+            me = await client.get_me()
+            share_link = f"https://t.me/{me.username}?start={unique_string}"
+            
+            await event.edit(f"✅ **සාර්ථකයි!**\n\nඔබේ ලින්ක් එක:\n`{share_link}`")
+            user_storage[user_id] = []
+            user_state[user_id] = None # Upload mode එක අයින් කරන්න
+
+# Main Bot Start
 async def main():
-    await bot.start(bot_token=BOT_TOKEN)
-    print("රාජසිංහ සාර්ථකව පණ ගැන්වුණා!")
-    await bot.run_until_disconnected()
+    main_bot = TelegramClient('rajasinghe_main', API_ID, API_HASH)
+    await main_bot.start(bot_token=MAIN_BOT_TOKEN)
+    await setup_bot_handlers(main_bot)
+    print("රාජසිංහ Main Bot වැඩ...")
+    await main_bot.run_until_disconnected()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
