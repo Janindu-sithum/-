@@ -20,39 +20,31 @@ MAIN_BOT_TOKEN = "8422828636:AAHA54LWg7qxqllIcQFKVjOHwHQL7x-K8qE"
 DB_CHANNEL_ID = -1003750069060
 FSUB_CHANNEL = "https://t.me/+Rktf3AlVNIkzMGNl" 
 
-# --- Powerful Anti-Duplicate System ---
-# මෙතනදී අපි message ID එක සහ ඒක ආපු වෙලාව සේව් කරනවා
+# --- Anti-Duplicate System ---
 recent_messages = {}
 
 def is_duplicate_request(msg_id):
     now = time.time()
-    # එකම ID එකක් තත්පර 10ක් ඇතුළත ආවොත් ඒක duplicate එකක් ලෙස සලකා reject කරයි
     if msg_id in recent_messages:
-        if now - recent_messages[msg_id] < 10:
+        if now - recent_messages[msg_id] < 5: # තත්පර 5ක limit එකක්
             return True
-    
     recent_messages[msg_id] = now
-    # පරණ දත්ත අයින් කර Memory එක පිරිසිදු කිරීම
-    if len(recent_messages) > 500:
-        oldest = min(recent_messages, key=recent_messages.get)
-        del recent_messages[oldest]
+    if len(recent_messages) > 1000: recent_messages.clear()
     return False
 
 # Data Storage
 user_state = {}
 db_links = {} 
-registered_channels = {} 
-bot_stats = {"users": set(), "links_created": 0}
+bot_stats = {"users": set()}
 
-bot = TelegramClient('rajasinghe_final_v14', API_ID, API_HASH)
+# Session නම වෙනස් කළා අලුතින් connect වෙන්න
+bot = TelegramClient('rajasinghe_final_v15', API_ID, API_HASH)
 
 # --- Handlers ---
 
 @bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
     if is_duplicate_request(event.id): return
-    bot_stats["users"].add(event.sender_id)
-    
     if len(event.message.text.split()) > 1:
         link_id = event.message.text.split()[1]
         try:
@@ -60,7 +52,7 @@ async def start(event):
         except:
             return await event.respond("❌ කරුණාකර චැනල් එකට Join වෙන්න.", 
                                      buttons=[Button.url("Join Channel", FSUB_CHANNEL)])
-
+        
         if link_id in db_links:
             data = db_links[link_id]
             if data.get('password'):
@@ -68,7 +60,7 @@ async def start(event):
                 return await event.respond(f"🔐 **Title:** {data['title']}\nPassword එවන්න:")
             await send_files(event.sender_id, link_id)
             return
-    await event.respond("👑 **රාජසිංහ Ultimate Bot**\n\n/link - ලින්ක් සෑදීමට\n/post - Post Schedule කිරීමට")
+    await event.respond("👑 **රාජසිංහ Ultimate Bot**\n\n/link - ලින්ක් සෑදීමට")
 
 @bot.on(events.NewMessage(pattern='/link'))
 async def link_cmd(event):
@@ -82,13 +74,9 @@ async def done_cmd(event):
     user_id = event.sender_id
     state = user_state.get(user_id)
     if state and state.get("mode") == "uploading":
-        if not state['files']: return await event.respond("❌ ගොනු නැත.")
         await event.respond(
-            f"⚙️ **Link Settings:**\n📂 Files: {len(state['files'])}\n🏷️ Title: {state['title']}\n🔐 Password: {state['pw']}", 
-            buttons=[
-                [Button.inline("🏷️ Title", data="set_title"), Button.inline("🔐 Password", data="set_pw")],
-                [Button.inline("🔗 Generate Link", data="gen_final")]
-            ]
+            f"⚙️ **Settings:**\nFiles: {len(state['files'])}\nTitle: {state['title']}", 
+            buttons=[[Button.inline("🔗 Generate Link", data="gen_final")]]
         )
 
 @bot.on(events.NewMessage(incoming=True))
@@ -96,72 +84,41 @@ async def master_handler(event):
     if event.text.startswith('/') or is_duplicate_request(event.id): return
     user_id = event.sender_id
     state = user_state.get(user_id)
-    if not state: return
-
-    if state.get("mode") == "uploading" and not state.get("task"):
+    if state and state.get("mode") == "uploading":
         state["files"].append(event.message.id)
-        return 
 
-    elif state.get("task") == "setting_title":
-        state["title"] = event.text
-        state["task"] = None
-        await event.respond("✅ Title එක සැකසුවා. දැන් /done එවන්න.")
-
-    elif state.get("task") == "setting_pw":
-        state["pw"] = event.text
-        state["task"] = None
-        await event.respond("✅ Password එක සැකසුවා. දැන් /done එවන්න.")
-
-    elif state.get("task") == "verify_pw":
-        link_id = state["link_id"]
-        if event.text == db_links[link_id]['password']:
-            await send_files(user_id, link_id)
-            user_state[user_id] = None
-        else: await event.respond("❌ වැරදි Password එකක්!")
-
-@bot.on(events.CallbackQuery)
-async def callback(event):
-    # CallbackQuery වලට duplicate check එක සාමාන්‍යයෙන් අවශ්‍ය නැත, නමුත් දාන්න පුළුවන්
-    user_id = event.sender_id
-    data = event.data.decode()
-    state = user_state.get(user_id)
+@bot.on(events.CallbackQuery(data="gen_final"))
+async def gen_callback(event):
+    state = user_state.get(event.sender_id)
     if not state: return
-
-    if data == "set_title":
-        state["task"] = "setting_title"
-        await event.respond("🏷️ Title එවන්න:")
-    elif data == "set_pw":
-        state["task"] = "setting_pw"
-        await event.respond("🔐 Password එවන්න:")
-    elif data == "gen_final":
-        await event.edit("🔄 Processing...")
-        saved_ids = []
-        for m_id in state["files"]:
-            m = await bot.forward_messages(DB_CHANNEL_ID, m_id, user_id)
-            saved_ids.append(str(m.id))
-        
-        link_id = str(int(time.time()))
-        db_links[link_id] = {"ids": "x".join(saved_ids), "password": state["pw"], "title": state["title"]}
-        bot_u = (await bot.get_me()).username
-        await event.edit(f"✅ **සාර්ථකයි!**\n\nLink: `https://t.me/{bot_u}?start={link_id}`")
-        user_state[user_id] = None
+    await event.edit("🔄 Processing...")
+    saved_ids = []
+    for m_id in state["files"]:
+        m = await bot.forward_messages(DB_CHANNEL_ID, m_id, event.sender_id)
+        saved_ids.append(str(m.id))
+    
+    link_id = str(int(time.time()))
+    db_links[link_id] = {"ids": "x".join(saved_ids), "title": state["title"]}
+    bot_u = (await bot.get_me()).username
+    await event.edit(f"✅ Link: `https://t.me/{bot_u}?start={link_id}`")
+    user_state[event.sender_id] = None
 
 async def send_files(user_id, link_key):
     data = db_links.get(link_key)
-    if not data: return
     msg_ids = [int(i) for i in data["ids"].split('x')]
-    await bot.send_message(user_id, "🛡️ Files එවමින් පවතියි...")
     for m_id in msg_ids:
-        try:
-            await bot.forward_messages(user_id, m_id, DB_CHANNEL_ID)
-            await asyncio.sleep(1)
-        except: continue
+        await bot.forward_messages(user_id, m_id, DB_CHANNEL_ID)
+        await asyncio.sleep(1)
 
 async def main():
     keep_alive()
+    # bot.start() වෙනුවට මේ විදිහට පාවිච්චි කරන්න
     await bot.start(bot_token=MAIN_BOT_TOKEN)
-    print("Anti-Duplicate Ultimate Version Online!")
+    print("Bot is fully fixed and online!")
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
